@@ -96,3 +96,12 @@ No unresolved code-quality blocker is known at local evidence closure. Docker/CI
 - Earliest invalidated phase: INTEGRATE/FALSIFY.
 - Repair: restore both imports and add a missing-job heartbeat regression proving the path raises `NotFound`, not `NameError`.
 - Reverification: full local suite rerun after repair.
+
+## F-012 — installed-package metadata contaminated CI manifest file-set check
+
+- Reproducer: CI run `38143259452` passed package install, quality, all 41 tests, and the full real-container lane, but both Python matrix jobs failed manifest verification because `pip install .` generated untracked `src/chronosqueue.egg-info/*` after checkout.
+- Classification: evidence-verifier/environment-artifact defect; runtime, concurrency, migration, and container checks had passed.
+- Earliest invalidated phase: MANIFEST/EVIDENCE.
+- Repair: manifest generation and verification explicitly ignore generated `*.egg-info` directories, matching the repository `.gitignore` source boundary.
+- Regression/evidence: reproduce by installing the package in-tree before manifest verification; verifier must still validate the 54 authoritative source/evidence files.
+- Reverification: quality + full 41-test suite + post-install manifest verification rerun locally; final GitHub CI rerun required.

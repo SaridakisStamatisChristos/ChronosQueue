@@ -17,7 +17,8 @@ def tracked_paths() -> list[str]:
         if not p.is_file():
             continue
         rel=p.relative_to(ROOT).as_posix()
-        if rel in EXCLUDE_FILES or any(rel.startswith(x) for x in EXCLUDE_PREFIXES) or "/__pycache__/" in rel:
+        if (rel in EXCLUDE_FILES or any(rel.startswith(x) for x in EXCLUDE_PREFIXES)
+                or "/__pycache__/" in rel or any(part.endswith(".egg-info") for part in p.relative_to(ROOT).parts)):
             continue
         out.append(rel)
     return sorted(out)

@@ -12,7 +12,9 @@ rows=[]
 for p in ROOT.rglob("*"):
     if not p.is_file(): continue
     rel=p.relative_to(ROOT).as_posix()
-    if rel in EXCLUDE_FILES or any(rel.startswith(x) for x in EXCLUDE_PREFIXES) or "/__pycache__/" in rel: continue
+    if (rel in EXCLUDE_FILES or any(rel.startswith(x) for x in EXCLUDE_PREFIXES)
+            or "/__pycache__/" in rel or any(part.endswith(".egg-info") for part in p.relative_to(ROOT).parts)):
+        continue
     h=hashlib.sha256(p.read_bytes()).hexdigest(); rows.append((rel,h))
 OUT.write_text("".join(f"{h}  {rel}\n" for rel,h in sorted(rows)),encoding="utf-8")
 print(f"wrote {len(rows)} entries to {OUT}")
