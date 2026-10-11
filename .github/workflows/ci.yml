@@ -1,0 +1,36 @@
+name: ci
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: python -m pip install .
+      - run: python -m compileall -q src tests scripts
+      - run: python scripts/check_format.py
+      - run: python scripts/static_check.py
+      - run: python -W error::ResourceWarning -m unittest discover -s tests -v
+      - run: python scripts/check_repo.py
+      - run: python scripts/verify_manifest.py
+      - run: docker compose config --quiet
+      - run: docker build -t chronosqueue:ci .
+      - run: docker compose up -d --build
+      - name: wait ready
+        run: |
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/health/ready && exit 0; sleep 1; done
+          docker compose logs; exit 1
+      - name: container smoke
+        run: |
+          J=$(curl -fsS -X POST http://127.0.0.1:8080/v1/jobs -H 'content-type: application/json' -d '{"queue":"ci","payload":{"x":1}}' | python -c 'import sys,json; print(json.load(sys.stdin)["job"]["id"])')
+          C=$(curl -fsS -X POST http://127.0.0.1:8080/v1/worker/claim -H 'content-type: application/json' -d '{"worker_id":"ci-worker","queues":["ci"],"lease_ms":30000}')
+          T=$(printf '%s' "$C" | python -c 'import sys,json; print(json.load(sys.stdin)["lease_token"])')
+          curl -fsS -X POST http://127.0.0.1:8080/v1/worker/ci-worker/complete -H 'content-type: application/json' -d "{\"job_id\":\"$J\",\"lease_token\":\"$T\",\"result\":{\"ok\":true}}"
+          curl -fsS http://127.0.0.1:8080/v1/jobs/$J | python -c 'import sys,json; assert json.load(sys.stdin)["state"]=="succeeded"'
+      - if: always()
+        run: docker compose down -v
