@@ -6,7 +6,6 @@ permissions:
   contents: write
 jobs:
   reconstruct-verify-commit:
-    if: startsWith(github.event.head_commit.message, 'ci: reconstruct')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
