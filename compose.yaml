@@ -1,10 +1,17 @@
 services:
   chronosqueue:
     build: .
+    restart: unless-stopped
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
       - chronosqueue-data:/data
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/ready', timeout=2).read()"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
 volumes:
-  chronosqueue-data: {}
+  chronosqueue-data:

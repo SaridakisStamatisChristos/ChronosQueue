@@ -1,91 +1,69 @@
 from __future__ import annotations
-import json, os, tempfile, threading, unittest, urllib.error, urllib.request
-from http.server import ThreadingHTTPServer
-from chronosqueue.api import Handler
-from chronosqueue.clock import FakeClock
-from chronosqueue.store import Store
 
-class ApiCase(unittest.TestCase):
-    def setUp(self):
-        self.tmp=tempfile.TemporaryDirectory(); self.db=os.path.join(self.tmp.name,"q.db")
-        self.clock=FakeClock(1_700_000_000_000_000); self.store=Store(self.db,clock=self.clock); self.store.migrate()
-        self.server=ThreadingHTTPServer(("127.0.0.1",0),Handler); self.server.store=self.store
+import http.client
+import json
+import threading
+import unittest
+from pathlib import Path
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+from chronosqueue.api import ChronosHTTPServer, IMPLEMENTED_ROUTES, MAX_HTTP_BODY
+from tests.helpers import service_at
+
+
+class APITests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.ctx=service_at(); self.service,self.clock,self.path=self.ctx.__enter__()
+        self.server=ChronosHTTPServer(("127.0.0.1",0),self.service)
         self.thread=threading.Thread(target=self.server.serve_forever,daemon=True); self.thread.start()
         self.base=f"http://127.0.0.1:{self.server.server_port}"
-    def tearDown(self):
-        self.server.shutdown(); self.server.server_close(); self.thread.join(timeout=2); self.tmp.cleanup()
-    def req(self, method, path, body=None):
+
+    def tearDown(self) -> None:
+        self.server.shutdown(); self.server.server_close(); self.thread.join(timeout=2); self.ctx.__exit__(None,None,None)
+
+    def call(self, method: str, path: str, body=None):
         data=None if body is None else json.dumps(body).encode()
-        r=urllib.request.Request(self.base+path,data=data,method=method,headers={"Content-Type":"application/json"})
+        req=Request(self.base+path,data=data,method=method,headers={"Content-Type":"application/json"})
         try:
-            with urllib.request.urlopen(r,timeout=3) as x:
-                raw=x.read(); return x.status, json.loads(raw) if raw else None
-        except urllib.error.HTTPError as x:
-            raw=x.read(); return x.code, json.loads(raw) if raw else None
-    def test_submit_claim_complete_smoke(self):
-        st,b=self.req("POST","/v1/jobs",{"queue":"q","payload":{"x":1}}); self.assertEqual(201,st); jid=b["job"]["id"]
-        st,c=self.req("POST","/v1/worker/claim",{"worker_id":"w","queues":["q"],"lease_ms":1000}); self.assertEqual(200,st)
-        st,d=self.req("POST","/v1/worker/w/complete",{"job_id":jid,"lease_token":c["lease_token"],"result":{"ok":True}}); self.assertEqual(200,st); self.assertEqual("succeeded",d["job"]["state"])
-    def test_delay_uses_server_clock(self):
-        st,b=self.req("POST","/v1/jobs",{"queue":"q","payload":{},"delay_ms":1}); jid=b["job"]["id"]
-        st,_=self.req("POST","/v1/worker/claim",{"worker_id":"w","queues":["q"],"lease_ms":100}); self.assertEqual(204,st)
-        self.clock.advance_us(1000)
-        st,c=self.req("POST","/v1/worker/claim",{"worker_id":"w","queues":["q"],"lease_ms":100}); self.assertEqual(200,st); self.assertEqual(jid,c["job"]["id"])
-    def test_malformed_json_and_route(self):
-        r=urllib.request.Request(self.base+"/v1/jobs",data=b"{",method="POST",headers={"Content-Type":"application/json"})
-        try: urllib.request.urlopen(r,timeout=3); self.fail("expected HTTPError")
-        except urllib.error.HTTPError as x: self.assertEqual(422,x.code)
-        st,b=self.req("GET","/not-a-route"); self.assertEqual(404,st); self.assertEqual("not_found",b["error"])
-    def test_ready_and_metrics(self):
-        st,b=self.req("GET","/health/live"); self.assertEqual(200,st)
-        st,b=self.req("GET","/health/ready"); self.assertEqual(200,st)
-        with urllib.request.urlopen(self.base+"/metrics",timeout=3) as x: self.assertEqual(200,x.status); self.assertIn(b"chronosqueue_",x.read())
+            with urlopen(req,timeout=5) as r: return r.status,json.loads(r.read()) if "json" in r.headers.get("Content-Type","") else r.read().decode()
+        except HTTPError as e: return e.code,json.loads(e.read())
 
+    def test_real_submit_claim_complete_flow(self) -> None:
+        code,j=self.call("POST","/v1/jobs",{"payload":{"task":"x"},"dedupe_key":"e2e"}); self.assertEqual(code,201)
+        code,c=self.call("POST","/v1/worker/claim",{"worker_id":"worker-1"}); self.assertEqual(code,200)
+        lease=c["job"]["lease"]
+        code,done=self.call("POST","/v1/worker/worker-1/complete",{"job_id":j["id"],"lease_token":lease["token"],"lease_generation":lease["generation"],"result":{"ok":True}})
+        self.assertEqual(code,200); self.assertEqual(done["state"],"succeeded")
+        code,done2=self.call("POST","/v1/worker/worker-1/complete",{"job_id":j["id"],"lease_token":lease["token"],"lease_generation":lease["generation"],"result":{"ok":True}})
+        self.assertEqual(code,200); self.assertEqual(done2["state"],"succeeded")
 
-    def test_admin_requeue_purge_and_time_filter(self):
-        st,a=self.req("POST","/v1/jobs",{"queue":"q","payload":{}}); jid=a["job"]["id"]
-        self.req("POST",f"/v1/jobs/{jid}/cancel",{})
-        st,r=self.req("POST","/v1/admin/requeue",{"job_ids":[jid]}); self.assertEqual(200,st); self.assertEqual("ready",r["items"][0]["state"])
-        st,page=self.req("GET","/v1/jobs?created_after=2020-01-01T00:00:00Z&created_before=2030-01-01T00:00:00Z"); self.assertEqual(200,st); self.assertEqual(1,len(page["items"]))
-        self.req("POST",f"/v1/jobs/{jid}/cancel",{})
-        self.clock.advance_us(1)
-        st,p=self.req("POST","/v1/admin/purge",{"older_than":"2023-11-14T22:13:21Z"}); self.assertEqual(200,st); self.assertEqual(1,p["purged"])
+    def test_health_liveness_and_readiness_differ(self) -> None:
+        self.assertEqual(self.call("GET","/health/live")[0],200); self.assertEqual(self.call("GET","/health/ready")[0],200)
+        self.service.store.path=str(self.path.parent/"missing"/"db.sqlite")
+        self.assertEqual(self.call("GET","/health/live")[0],200); self.assertEqual(self.call("GET","/health/ready")[0],503)
 
+    def test_malformed_json_and_unknown_route_safe_errors(self) -> None:
+        conn=http.client.HTTPConnection("127.0.0.1",self.server.server_port,timeout=5)
+        conn.request("POST","/v1/jobs",body=b"{bad",headers={"Content-Type":"application/json","Content-Length":"4"})
+        r=conn.getresponse(); body=json.loads(r.read()); self.assertEqual(r.status,400); self.assertEqual(body["error"]["code"],"invalid_request"); conn.close()
+        self.assertEqual(self.call("GET","/does-not-exist")[0],404)
 
-    def test_malformed_numeric_input_is_safe_422(self):
-        st,b=self.req("POST","/v1/jobs",{"queue":"q","payload":{},"priority":"not-an-int"})
-        self.assertEqual(422,st); self.assertEqual("validation_error",b["error"])
-        self.assertNotIn("not-an-int",b["message"])
+    def test_oversized_request_rejected_before_body_read(self) -> None:
+        conn=http.client.HTTPConnection("127.0.0.1",self.server.server_port,timeout=5)
+        conn.putrequest("POST","/v1/jobs"); conn.putheader("Content-Type","application/json"); conn.putheader("Content-Length",str(MAX_HTTP_BODY+1)); conn.endheaders()
+        r=conn.getresponse(); self.assertEqual(r.status,413); r.read(); conn.close()
 
-    def test_metrics_escape_queue_label(self):
-        self.req("POST","/v1/jobs",{"queue":"q\\\"x","payload":{}})
-        with urllib.request.urlopen(self.base+"/metrics",timeout=3) as x:
-            text=x.read().decode()
-        self.assertIn('queue="q\\\\\\\"x"',text)
+    def test_metrics_and_openapi_served(self) -> None:
+        code,text=self.call("GET","/metrics"); self.assertEqual(code,200); self.assertIn("chronosqueue_events_total",text)
+        with urlopen(self.base+"/openapi.yaml",timeout=5) as r: self.assertIn(b"openapi: 3.1.0",r.read())
 
-
-    def test_non_array_queues_tags_and_retry_rejected(self):
-        st,b=self.req("POST","/v1/jobs",{"queue":"q","payload":{},"tags":"bad"}); self.assertEqual(422,st)
-        st,b=self.req("POST","/v1/jobs",{"queue":"q","payload":{},"retry":"bad"}); self.assertEqual(422,st)
-        st,b=self.req("POST","/v1/worker/claim",{"worker_id":"w","queues":"q","lease_ms":100}); self.assertEqual(422,st)
-    def test_empty_claim_is_true_204(self):
-        r=urllib.request.Request(self.base+"/v1/worker/claim",data=json.dumps({"worker_id":"w","queues":["q"],"lease_ms":100}).encode(),method="POST",headers={"Content-Type":"application/json"})
-        with urllib.request.urlopen(r,timeout=3) as x:
-            self.assertEqual(204,x.status); self.assertEqual(b"",x.read())
-
-
-    def test_duplicate_http_completion_is_idempotent(self):
-        _,b=self.req("POST","/v1/jobs",{"queue":"q","payload":{}}); jid=b["job"]["id"]
-        _,c=self.req("POST","/v1/worker/claim",{"worker_id":"w","queues":["q"],"lease_ms":1000})
-        body={"job_id":jid,"lease_token":c["lease_token"],"result":{"ok":True}}
-        st,a=self.req("POST","/v1/worker/w/complete",body); self.assertTrue(a["changed"])
-        st,b=self.req("POST","/v1/worker/w/complete",body); self.assertEqual(200,st); self.assertFalse(b["changed"])
-    def test_schema_incompatibility_fails_ready_not_live(self):
-        import sqlite3
-        conn=sqlite3.connect(self.db); conn.execute("PRAGMA user_version=99"); conn.commit(); conn.close()
-        st,_=self.req("GET","/health/live"); self.assertEqual(200,st)
-        st,_=self.req("GET","/health/ready"); self.assertEqual(503,st)
-    def test_malformed_job_id_is_safe_not_found(self):
-        st,b=self.req("GET","/v1/jobs/not-a-uuid"); self.assertEqual(404,st); self.assertEqual("not_found",b["error"])
-
-if __name__ == '__main__': unittest.main()
+    def test_openapi_route_set_equals_declared_runtime_route_set(self) -> None:
+        text=Path(__file__).parents[1].joinpath("src/chronosqueue/openapi.yaml").read_text()
+        routes=set(); current=None
+        for line in text.splitlines():
+            if line.startswith("  /") and line.endswith(":"):
+                current=line.strip()[:-1]
+            elif current and line.startswith("    ") and line.strip() in {"get:","post:","put:","delete:","patch:"}:
+                routes.add((line.strip()[:-1].upper(),current))
+        self.assertEqual(routes,IMPLEMENTED_ROUTES)

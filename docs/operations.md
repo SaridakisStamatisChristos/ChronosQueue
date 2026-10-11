@@ -1,38 +1,45 @@
 # Operations
 
-## Storage
+## Deployment
 
-Keep the SQLite database on a local filesystem with reliable fsync semantics. WAL and `synchronous=FULL` are enabled. Network filesystems with ambiguous locking/durability semantics are outside the supported v0.1 deployment model.
+The supported v0.1 topology is one ChronosQueue server with persistent local SQLite storage and multiple concurrent workers. Use a local filesystem suitable for SQLite locking; network filesystems with unclear locking semantics are outside the verified target.
 
-## Backup
+CLI server default: `127.0.0.1:8080`. Compose publishes `127.0.0.1:8080:8080` and uses a named volume.
 
-Use SQLite's online backup API or a storage snapshot mechanism known to be SQLite-safe. Do not copy only the main database file while a live WAL is active unless the backup procedure explicitly accounts for the WAL.
+## Health
 
-## Recovery
-
-On restart, authoritative state is read from SQLite. Expired leases are reconciled transactionally on subsequent operational calls. Readiness fails on schema-version mismatch or persisted lease/terminal invariant corruption detectable by the readiness audit.
+`/health/live` only proves the process can answer HTTP. `/health/ready` additionally opens a write transaction, verifies the exact schema version, and touches the health sentinel. Missing/unwritable storage or incompatible schema returns 503 readiness while liveness remains 200.
 
 ## Migrations
 
-`chronosqueue migrate` upgrades to the current schema. Downgrades are destructive and require `--allow-destructive-downgrade`. Test downgrades on backups/copies before operational use.
+Schema version is stored in SQLite `PRAGMA user_version` and migrations are bundled as explicit up/down SQL files.
 
-## Exposure
+```bash
+chronosqueue migrate --db ./data/chronosqueue.db
+```
 
-The default host server is loopback-only. The container listens on all interfaces **inside its network namespace** so Docker forwarding works, while Compose publishes the port only on host `127.0.0.1`. There is no built-in authentication or TLS in v0.1. Wider exposure requires an authenticated trusted proxy or another explicit trust boundary.
+Downgrades can destroy schema/data and therefore require explicit authority:
 
-## Crash/response ambiguity semantics
+```bash
+chronosqueue migrate --db ./data/chronosqueue.db --target 1 --allow-destructive
+```
 
-Every state mutation is one SQLite write transaction. An interruption before commit leaves the prior durable state; an interruption after commit leaves the new durable state even if the HTTP response is lost. Operation-specific consequences:
+CI exercises `0 -> 1 -> 2 -> 1 -> 0 -> 2` and verifies a legacy version-1 row survives the supported `1 -> 2` upgrade.
 
-| Operation | Lost before commit | Commit succeeded but response lost |
-|---|---|---|
-| submit | no accepted job | retry with the same idempotency key returns the retained job; without a key the client must reconcile |
-| claim | job remains claimable | lease remains active until completion/heartbeat/expiry; a worker that lost the token must let it expire |
-| heartbeat | previous expiry remains | retry with the same current token is safe while the lease remains current |
-| complete | job remains leased | same completion token is idempotently accepted |
-| fail/retry scheduling | job remains leased | consumed lease receipt prevents double failure application |
-| cancel | prior state remains | repeated cancel of an already-cancelled job is harmless |
-| requeue | terminal state remains | retry may receive transition conflict; operator can reconcile with GET |
-| purge | rows remain | repeating the same threshold is safe and deletes only remaining qualifying terminal rows |
+## Backup and recovery
 
-Test-only pre-commit failpoints exercise these rollback boundaries without changing production behavior.
+For a consistent online backup, use Python's SQLite backup API against the database while the service remains running, or stop the service cleanly and copy the database after shutdown. Do not copy only the main `.db` file while WAL writes are active unless you also use a SQLite-aware backup procedure.
+
+Recovery is: restore the database, start the same/newer compatible ChronosQueue version, run migrations, then wait for readiness. Active leases are not trusted merely because they existed in memory; persisted expiration timestamps govern recovery.
+
+## Purge
+
+Purge accepts an explicit terminal-time threshold and a bounded limit. It only deletes `succeeded`, `dead-lettered`, and `cancelled` jobs older than the threshold. Ready/scheduled/leased work cannot be purged through this endpoint.
+
+## Metrics
+
+`/metrics` exposes durable event counters plus current per-queue/state gauges and claim latency aggregate. No performance SLO is claimed in v0.1.
+
+## Failure modes
+
+SQLite write contention waits up to the configured busy timeout. A storage failure causes the affected request to fail and readiness to go unhealthy. Atomic SQLite transactions mean an acknowledged submit/claim/completion is committed; if the HTTP response is lost after commit, idempotency keys and completion receipts resolve ambiguity.

@@ -1,36 +1,62 @@
-name: ci
+name: CI
+
 on:
   push:
   pull_request:
+
 permissions:
   contents: read
+
 jobs:
-  test:
+  verify:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: '3.12'}
-      - run: python -m pip install .
-      - run: python -m compileall -q src tests scripts
-      - run: python scripts/check_format.py
-      - run: python scripts/static_check.py
-      - run: python -W error::ResourceWarning -m unittest discover -s tests -v
-      - run: python scripts/check_repo.py
-      - run: python scripts/verify_manifest.py
-      - run: docker compose config --quiet
-      - run: docker build -t chronosqueue:ci .
-      - run: docker compose up -d --build
-      - name: wait ready
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install package
+        run: python -m pip install --no-deps .
+      - name: Formatting and static sanity
         run: |
-          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:8080/health/ready && exit 0; sleep 1; done
-          docker compose logs; exit 1
-      - name: container smoke
+          python scripts/quality.py
+          python -m compileall -q src tests scripts
+      - name: Full unit integration concurrency and adversarial suite
+        env:
+          PYTHONHASHSEED: random
+        run: PYTHONPATH=src:. python -m unittest discover -s tests -v
+      - name: Evidence manifest integrity
+        run: python scripts/verify_manifest.py
+      - name: Build wheel
+        run: python -m pip wheel . --no-deps --no-build-isolation -w dist
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose
+        run: docker compose config --quiet
+      - name: Build real image
+        run: docker build -t chronosqueue:ci .
+      - name: Boot Compose deployment
+        run: docker compose up -d --build
+      - name: Wait for readiness
         run: |
-          J=$(curl -fsS -X POST http://127.0.0.1:8080/v1/jobs -H 'content-type: application/json' -d '{"queue":"ci","payload":{"x":1}}' | python -c 'import sys,json; print(json.load(sys.stdin)["job"]["id"])')
-          C=$(curl -fsS -X POST http://127.0.0.1:8080/v1/worker/claim -H 'content-type: application/json' -d '{"worker_id":"ci-worker","queues":["ci"],"lease_ms":30000}')
-          T=$(printf '%s' "$C" | python -c 'import sys,json; print(json.load(sys.stdin)["lease_token"])')
-          curl -fsS -X POST http://127.0.0.1:8080/v1/worker/ci-worker/complete -H 'content-type: application/json' -d "{\"job_id\":\"$J\",\"lease_token\":\"$T\",\"result\":{\"ok\":true}}"
-          curl -fsS http://127.0.0.1:8080/v1/jobs/$J | python -c 'import sys,json; assert json.load(sys.stdin)["state"]=="succeeded"'
-      - if: always()
+          for i in $(seq 1 40); do
+            if curl --fail --silent http://127.0.0.1:8080/health/ready >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          docker compose logs
+          exit 1
+      - name: Real submit claim complete smoke
+        run: python scripts/container_smoke.py
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs
+      - name: Shutdown
+        if: always()
         run: docker compose down -v

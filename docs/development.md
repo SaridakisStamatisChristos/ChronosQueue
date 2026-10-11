@@ -1,17 +1,22 @@
-# Development and verification
+# Development
+
+ChronosQueue has no third-party runtime dependencies.
 
 ```bash
-python -m pip install --no-build-isolation .
-python -m compileall -q src tests scripts
-python -W error::ResourceWarning -m unittest discover -s tests -v
-python scripts/check_repo.py
+python -m pip install -e . --no-build-isolation
+make quality
+make test
+```
+
+The test suite uses deterministic manual clocks instead of timing sleeps for schedule, lease, retry, and expiry boundaries. Concurrency falsifiers use real threads and independent SQLite connections.
+
+`make quality` performs dependency-free formatting hygiene, AST checks, and bytecode compilation. `make test` runs unit, integration, HTTP, migration, crash-recovery, concurrency, pagination, and adversarial tests.
+
+Before changing evidence-tracked files:
+
+```bash
+python scripts/generate_manifest.py
 python scripts/verify_manifest.py
 ```
 
-The concurrency suite deliberately races 20+ workers on one job and 24 workers over many jobs. Fake time drives scheduled execution, exact lease expiry, and retry boundaries deterministically.
-
-CI additionally validates Compose, builds the real image, boots it, waits for readiness, and executes submit → claim → complete against the container.
-
-## Local evidence environment
-
-The R7 build campaign executed the full suite under CPython 3.13 in a Linux container environment. Docker itself was not installed in that environment, so Docker/Compose execution is intentionally delegated to GitHub Actions and remains unverified until that workflow is green.
+Docker verification is intentionally performed against the real built image in CI: Compose validation, image build, boot, readiness wait, and submit→claim→complete smoke.

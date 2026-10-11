@@ -1,5 +1,10 @@
 # Contributing
 
-Preserve the documented state-machine and durability invariants. Every correctness change must add or update regression tests. Do not weaken concurrency tests or change exact-capacity/lease semantics merely to obtain green CI.
+1. Preserve the documented state, lease, attempt, durability, and pagination contracts.
+2. Add a regression test for every correctness fix.
+3. Run `make quality` and `make test`.
+4. Update OpenAPI/docs when public behavior changes.
+5. Regenerate `evidence/MANIFEST.sha256` after final changes.
+6. Do not weaken a failing test to obtain green CI; classify the failure and repair the earliest invalidated contract/code layer.
 
-Before proposing changes run the commands in `docs/development.md`. New API routes must be added to both the runtime route contract and OpenAPI; CI rejects divergence.
+Changes that introduce multi-node coordination, authentication, destructive migration semantics, or persistent-format incompatibility require an explicit contract revision rather than an incidental implementation change.

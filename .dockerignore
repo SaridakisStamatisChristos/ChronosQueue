@@ -1,0 +1,11 @@
+.git
+.github
+.venv
+__pycache__
+*.pyc
+*.db
+*.db-wal
+*.db-shm
+dist
+build
+evidence

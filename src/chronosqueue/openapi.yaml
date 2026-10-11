@@ -1,0 +1,138 @@
+openapi: 3.1.0
+info:
+  title: ChronosQueue API
+  version: 0.1.0
+  description: Durable local-first job queue API. Authentication is out of scope for the trusted-local v0.1 deployment model.
+servers:
+  - url: http://127.0.0.1:8080
+paths:
+  /health/live:
+    get:
+      operationId: healthLive
+      responses: {"200": {description: Process is alive}}
+  /health/ready:
+    get:
+      operationId: healthReady
+      responses: {"200": {description: Ready}, "503": {description: Storage or schema unavailable}}
+  /metrics:
+    get:
+      operationId: metrics
+      responses: {"200": {description: Prometheus text metrics}}
+  /openapi.yaml:
+    get:
+      operationId: openapi
+      responses: {"200": {description: This OpenAPI document}}
+  /v1/jobs:
+    post:
+      operationId: submitJob
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/SubmitJob"}}}}
+      responses: {"201": {description: Created}, "200": {description: Idempotent replay}, "400": {description: Invalid request}, "409": {description: Idempotency conflict}, "413": {description: Payload too large}}
+    get:
+      operationId: listJobs
+      parameters:
+        - {name: queue, in: query, schema: {type: string}}
+        - {name: state, in: query, schema: {type: string}}
+        - {name: tag, in: query, schema: {type: array, items: {type: string}}}
+        - {name: worker_id, in: query, schema: {type: string}}
+        - {name: created_after_us, in: query, schema: {type: integer}}
+        - {name: created_before_us, in: query, schema: {type: integer}}
+        - {name: min_priority, in: query, schema: {type: integer}}
+        - {name: max_priority, in: query, schema: {type: integer}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 500}}
+        - {name: cursor, in: query, schema: {type: string}}
+      responses: {"200": {description: Keyset page}}
+  /v1/jobs/{id}:
+    get:
+      operationId: getJob
+      parameters: [{$ref: "#/components/parameters/JobId"}]
+      responses: {"200": {description: Job}, "404": {description: Not found}}
+  /v1/jobs/{id}/events:
+    get:
+      operationId: jobEvents
+      parameters: [{$ref: "#/components/parameters/JobId"}]
+      responses: {"200": {description: Audit events}}
+  /v1/jobs/{id}/cancel:
+    post:
+      operationId: cancelJob
+      parameters: [{$ref: "#/components/parameters/JobId"}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object}}}}
+      responses: {"200": {description: Cancelled or already cancelled}, "409": {description: Terminal conflict}}
+  /v1/jobs/{id}/requeue:
+    post:
+      operationId: requeueJob
+      parameters: [{$ref: "#/components/parameters/JobId"}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object}}}}
+      responses: {"200": {description: Explicitly requeued}, "409": {description: Ineligible state}}
+  /v1/worker/claim:
+    post:
+      operationId: claimJob
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/Claim"}}}}
+      responses: {"200": {description: Job lease or null}}
+  /v1/worker/{worker_id}/heartbeat:
+    post:
+      operationId: heartbeat
+      parameters: [{$ref: "#/components/parameters/WorkerId"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/LeaseAction"}}}}
+      responses: {"200": {description: Lease renewed}, "409": {description: Stale lease}}
+  /v1/worker/{worker_id}/complete:
+    post:
+      operationId: completeJob
+      parameters: [{$ref: "#/components/parameters/WorkerId"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/LeaseAction"}}}}
+      responses: {"200": {description: Success recorded or idempotent replay}, "409": {description: Stale lease}}
+  /v1/worker/{worker_id}/fail:
+    post:
+      operationId: failJob
+      parameters: [{$ref: "#/components/parameters/WorkerId"}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: "#/components/schemas/LeaseAction"}}}}
+      responses: {"200": {description: Retry/dead-letter decision recorded}, "409": {description: Stale lease}}
+  /v1/queues:
+    get:
+      operationId: queueStats
+      responses: {"200": {description: Queue statistics}}
+  /v1/leases:
+    get:
+      operationId: activeLeases
+      responses: {"200": {description: Currently valid leases}}
+  /v1/admin/purge:
+    post:
+      operationId: purgeTerminal
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [terminal_before_us], properties: {terminal_before_us: {type: integer}, limit: {type: integer}}}}}}
+      responses: {"200": {description: Purge count}}
+components:
+  parameters:
+    JobId: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+    WorkerId: {name: worker_id, in: path, required: true, schema: {type: string, pattern: "^[A-Za-z0-9._:@-]{1,128}$"}}
+  schemas:
+    SubmitJob:
+      type: object
+      required: [payload]
+      properties:
+        id: {type: string, format: uuid}
+        queue: {type: string, default: default}
+        payload: {}
+        delay_ms: {type: integer, minimum: 0}
+        scheduled_at: {type: string, format: date-time}
+        scheduled_at_us: {type: integer, minimum: 0}
+        priority: {type: integer}
+        tags: {type: array, items: {type: string}}
+        dedupe_key: {type: string}
+        max_attempts: {type: integer, minimum: 1}
+        retry: {type: object}
+    Claim:
+      type: object
+      required: [worker_id]
+      properties:
+        worker_id: {type: string}
+        queues: {type: array, items: {type: string}}
+        lease_ms: {type: integer, minimum: 1}
+    LeaseAction:
+      type: object
+      required: [job_id, lease_token, lease_generation]
+      properties:
+        job_id: {type: string, format: uuid}
+        lease_token: {type: string, format: uuid}
+        lease_generation: {type: integer, minimum: 1}
+        lease_ms: {type: integer, minimum: 1}
+        result: {}
+        error: {}

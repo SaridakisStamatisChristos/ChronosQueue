@@ -1,25 +1,12 @@
-# Python
 __pycache__/
 *.py[cod]
-*.egg-info/
 .venv/
-venv/
+dist/
+build/
+*.egg-info/
+.coverage
 .pytest_cache/
-.mypy_cache/
-.ruff_cache/
-
-# Build outputs
-/build/
-/dist/
-coverage*.txt
-
-# Runtime data
+data/
 *.db
 *.db-wal
 *.db-shm
-/data/
-
-# Editor / OS
-.DS_Store
-.idea/
-.vscode/

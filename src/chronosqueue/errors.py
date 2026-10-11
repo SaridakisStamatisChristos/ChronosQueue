@@ -1,6 +1,14 @@
+from __future__ import annotations
+
+
 class ChronosError(Exception):
     status = 400
-    code = "chronos_error"
+    code = "invalid_request"
+
+    def __init__(self, message: str, *, details: dict | None = None) -> None:
+        super().__init__(message)
+        self.message = message
+        self.details = details or {}
 
 
 class NotFound(ChronosError):
@@ -17,13 +25,9 @@ class StaleLease(Conflict):
     code = "stale_lease"
 
 
-class InvalidTransition(Conflict):
-    code = "invalid_transition"
-
-
-class ValidationError(ChronosError):
-    status = 422
-    code = "validation_error"
+class PayloadTooLarge(ChronosError):
+    status = 413
+    code = "payload_too_large"
 
 
 class StorageUnavailable(ChronosError):

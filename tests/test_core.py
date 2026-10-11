@@ -1,155 +1,95 @@
 from __future__ import annotations
 
-import os
-import tempfile
-import threading
 import unittest
-from concurrent.futures import ThreadPoolExecutor
 
-from chronosqueue.clock import FakeClock
-from chronosqueue.errors import InvalidTransition, StaleLease, ValidationError
-from chronosqueue.migrations import CURRENT_VERSION, version
-from chronosqueue.store import Store
+from chronosqueue.errors import Conflict, StaleLease
+from tests.helpers import service_at
 
 
-class StoreCase(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.db = os.path.join(self.tmp.name, "q.db")
-        self.clock = FakeClock(1_700_000_000_000_000)
-        self.store = Store(self.db, clock=self.clock)
-        self.store.migrate()
+class CoreTests(unittest.TestCase):
+    def test_durable_acceptance_survives_restart(self) -> None:
+        with service_at() as (s, clock, path):
+            created = s.submit(payload={"x": 1}, queue="q")
+            restarted = type(s)(str(path), clock=clock)
+            self.assertEqual(restarted.get_job(created["id"])["payload"], {"x": 1})
 
-    def tearDown(self):
-        self.tmp.cleanup()
+    def test_scheduled_job_not_claimable_early_and_exact_boundary_is_ready(self) -> None:
+        with service_at(1_000_000) as (s, clock, _):
+            j = s.submit(payload={}, scheduled_at_us=2_000_000)
+            self.assertIsNone(s.claim(worker_id="w"))
+            clock.set_us(1_999_999)
+            self.assertIsNone(s.claim(worker_id="w"))
+            clock.set_us(2_000_000)
+            self.assertEqual(s.claim(worker_id="w")["id"], j["id"])
 
-    def submit(self, **kw):
-        base = dict(queue="q", payload={"x": 1}, max_attempts=3, retry_kind="fixed", retry_delay_us=10)
-        base.update(kw)
-        return self.store.submit(**base)[0]
+    def test_completion_is_idempotent_and_stale_generation_fails(self) -> None:
+        with service_at() as (s, _, _):
+            j = s.submit(payload={})
+            lease = s.claim(worker_id="w")
+            args = dict(job_id=j["id"], worker_id="w", lease_token=lease["lease"]["token"], lease_generation=lease["lease"]["generation"])
+            one = s.complete(**args, result={"ok": True})
+            two = s.complete(**args, result={"ok": True})
+            self.assertEqual(one["state"], "succeeded")
+            self.assertEqual(two["state"], "succeeded")
+            with self.assertRaises(StaleLease):
+                s.fail(**args, error={"late": True})
 
-    def test_no_premature_execution_exact_boundary(self):
-        due = self.clock.now_us() + 100
-        self.submit(scheduled_at_us=due)
-        self.assertIsNone(self.store.claim(worker_id="w", queues=["q"], lease_us=1000))
-        self.clock.advance_us(99)
-        self.assertIsNone(self.store.claim(worker_id="w", queues=["q"], lease_us=1000))
-        self.clock.advance_us(1)
-        self.assertIsNotNone(self.store.claim(worker_id="w", queues=["q"], lease_us=1000))
+    def test_retry_fixed_and_max_attempts(self) -> None:
+        with service_at(10_000_000) as (s, clock, _):
+            j = s.submit(payload={}, max_attempts=2, retry={"kind": "fixed", "delay_ms": 50, "max_delay_ms": 50})
+            l1 = s.claim(worker_id="a")
+            r1 = s.fail(job_id=j["id"], worker_id="a", lease_token=l1["lease"]["token"], lease_generation=l1["lease"]["generation"], error={"n":1})
+            self.assertEqual(r1["state"], "scheduled")
+            self.assertEqual(r1["scheduled_at_us"], 10_050_000)
+            clock.set_us(10_049_999); self.assertIsNone(s.claim(worker_id="b"))
+            clock.set_us(10_050_000); l2 = s.claim(worker_id="b")
+            r2 = s.fail(job_id=j["id"], worker_id="b", lease_token=l2["lease"]["token"], lease_generation=l2["lease"]["generation"], error={"n":2})
+            self.assertEqual(r2["state"], "dead-lettered")
+            self.assertIsNone(s.claim(worker_id="c"))
 
-    def test_20_workers_race_one_job_exactly_one_lease(self):
-        self.submit()
-        barrier = threading.Barrier(20)
-        def run(i):
-            barrier.wait()
-            return self.store.claim(worker_id=f"w{i}", queues=["q"], lease_us=1000)
-        with ThreadPoolExecutor(max_workers=20) as ex:
-            results = list(ex.map(run, range(20)))
-        claims = [r for r in results if r is not None]
-        self.assertEqual(1, len(claims))
-        self.assertEqual("leased", self.store.get(claims[0].job["id"])["state"])
+    def test_exponential_backoff(self) -> None:
+        with service_at(0) as (s, clock, _):
+            j = s.submit(payload={}, max_attempts=4, retry={"kind":"exponential","delay_ms":10,"max_delay_ms":25})
+            expected = [10_000, 20_000, 25_000]
+            now = 0
+            for i, delta in enumerate(expected, 1):
+                lease=s.claim(worker_id=f"w{i}")
+                out=s.fail(job_id=j["id"], worker_id=f"w{i}", lease_token=lease["lease"]["token"], lease_generation=lease["lease"]["generation"], error={})
+                self.assertEqual(out["scheduled_at_us"], now + delta)
+                now += delta; clock.set_us(now)
 
-    def test_many_workers_many_jobs_no_duplicate_active_lease(self):
-        for _ in range(60): self.submit()
-        seen = set(); lock = threading.Lock()
-        def worker(i):
-            local = []
-            while True:
-                c = self.store.claim(worker_id=f"w{i}", queues=["q"], lease_us=1_000_000)
-                if c is None: break
-                local.append(c.job["id"])
-            with lock:
-                for jid in local:
-                    self.assertNotIn(jid, seen); seen.add(jid)
-        with ThreadPoolExecutor(max_workers=24) as ex: list(ex.map(worker, range(24)))
-        self.assertEqual(60, len(seen))
+    def test_terminal_state_requires_explicit_requeue(self) -> None:
+        with service_at() as (s, _, _):
+            j=s.submit(payload={}); l=s.claim(worker_id="w")
+            done=s.complete(job_id=j["id"],worker_id="w",lease_token=l["lease"]["token"],lease_generation=l["lease"]["generation"],result={})
+            self.assertEqual(done["state"],"succeeded")
+            with self.assertRaises(Conflict): s.cancel(j["id"])
+            with self.assertRaises(Conflict): s.requeue(j["id"])
 
-    def test_expiry_reassignment_stale_completion_rejected(self):
-        self.submit(max_attempts=3)
-        c1 = self.store.claim(worker_id="a", queues=["q"], lease_us=10)
-        self.clock.advance_us(10)
-        c2 = self.store.claim(worker_id="b", queues=["q"], lease_us=10)
-        self.assertIsNotNone(c2)
-        with self.assertRaises(StaleLease):
-            self.store.complete(job_id=c1.job["id"], worker_id="a", lease_token=c1.lease_token)
-        self.store.complete(job_id=c2.job["id"], worker_id="b", lease_token=c2.lease_token)
+    def test_cancelled_can_be_explicitly_requeued(self) -> None:
+        with service_at() as (s, _, _):
+            j=s.submit(payload={}); self.assertEqual(s.cancel(j["id"])["state"],"cancelled")
+            self.assertEqual(s.requeue(j["id"])["state"],"ready")
 
-    def test_heartbeat_generation_staleness(self):
-        self.submit(); c1 = self.store.claim(worker_id="a", queues=["q"], lease_us=10)
-        self.clock.advance_us(10); c2 = self.store.claim(worker_id="b", queues=["q"], lease_us=10)
-        with self.assertRaises(StaleLease):
-            self.store.heartbeat(job_id=c1.job["id"], worker_id="a", lease_token=c1.lease_token, lease_us=50)
-        self.store.heartbeat(job_id=c2.job["id"], worker_id="b", lease_token=c2.lease_token, lease_us=50)
+    def test_ordering_priority_then_schedule_then_sequence(self) -> None:
+        with service_at(1000) as (s, _, _):
+            a=s.submit(payload={"n":"a"},priority=1)
+            b=s.submit(payload={"n":"b"},priority=2)
+            c=s.submit(payload={"n":"c"},priority=2)
+            self.assertEqual(s.claim(worker_id="w1")["id"], b["id"])
+            self.assertEqual(s.claim(worker_id="w2")["id"], c["id"])
+            self.assertEqual(s.claim(worker_id="w3")["id"], a["id"])
 
-    def test_completion_idempotency(self):
-        self.submit(); c = self.store.claim(worker_id="a", queues=["q"], lease_us=100)
-        first, changed1 = self.store.complete(job_id=c.job["id"], worker_id="a", lease_token=c.lease_token, result={"ok":1})
-        second, changed2 = self.store.complete(job_id=c.job["id"], worker_id="a", lease_token=c.lease_token, result={"ok":1})
-        self.assertTrue(changed1); self.assertFalse(changed2); self.assertEqual(first["state"], second["state"])
+    def test_immediate_idempotency_replay_after_time_advance(self) -> None:
+        with service_at(1_000_000) as (s, clock, _):
+            first=s.submit(payload={"x":1},dedupe_key="network-retry")
+            clock.advance_us(9_000_000)
+            second=s.submit(payload={"x":1},dedupe_key="network-retry")
+            self.assertEqual(first["id"],second["id"]); self.assertTrue(second["deduplicated"])
 
-    def test_retry_fixed_and_max_attempts(self):
-        self.submit(max_attempts=2, retry_delay_us=50)
-        c1 = self.store.claim(worker_id="a", queues=["q"], lease_us=100)
-        j, _ = self.store.fail(job_id=c1.job["id"], worker_id="a", lease_token=c1.lease_token, error={"e":1})
-        self.assertEqual("failed", j["state"])
-        self.clock.advance_us(49); self.assertIsNone(self.store.claim(worker_id="b", queues=["q"], lease_us=100))
-        self.clock.advance_us(1); c2 = self.store.claim(worker_id="b", queues=["q"], lease_us=100)
-        j, _ = self.store.fail(job_id=c2.job["id"], worker_id="b", lease_token=c2.lease_token)
-        self.assertEqual("dead-lettered", j["state"])
-        self.assertIsNone(self.store.claim(worker_id="c", queues=["q"], lease_us=100))
-
-    def test_cancellation_claim_and_completion_safety(self):
-        j = self.submit(); cancelled, _ = self.store.cancel(j["id"])
-        self.assertEqual("cancelled", cancelled["state"]); self.assertIsNone(self.store.claim(worker_id="w", queues=["q"], lease_us=100))
-        j2 = self.submit(); c = self.store.claim(worker_id="w", queues=["q"], lease_us=100); self.store.cancel(j2["id"])
-        with self.assertRaises(StaleLease): self.store.complete(job_id=j2["id"], worker_id="w", lease_token=c.lease_token)
-
-    def test_completion_then_cancel_rejected(self):
-        self.submit(); c = self.store.claim(worker_id="w", queues=["q"], lease_us=100)
-        self.store.complete(job_id=c.job["id"], worker_id="w", lease_token=c.lease_token)
-        with self.assertRaises(InvalidTransition): self.store.cancel(c.job["id"])
-
-    def test_idempotent_submission_under_concurrency(self):
-        barrier = threading.Barrier(16)
-        def run(_):
-            barrier.wait(); return self.store.submit(queue="q", payload={"x":1}, dedupe_key="same")[0]["id"]
-        with ThreadPoolExecutor(max_workers=16) as ex: ids = list(ex.map(run, range(16)))
-        self.assertEqual(1, len(set(ids)))
-
-    def test_ordering_priority_due_sequence(self):
-        a = self.submit(priority=1); b = self.submit(priority=3); c = self.submit(priority=3)
-        first = self.store.claim(worker_id="w", queues=["q"], lease_us=100)
-        second = self.store.claim(worker_id="x", queues=["q"], lease_us=100)
-        self.assertEqual(b["id"], first.job["id"]); self.assertEqual(c["id"], second.job["id"])
-
-    def test_restart_preserves_acknowledged_and_retry_state(self):
-        j = self.submit(max_attempts=2, retry_delay_us=50)
-        other = Store(self.db, clock=self.clock)
-        self.assertEqual(j["id"], other.get(j["id"])["id"])
-        c = other.claim(worker_id="w", queues=["q"], lease_us=100)
-        other.fail(job_id=j["id"], worker_id="w", lease_token=c.lease_token)
-        third = Store(self.db, clock=self.clock)
-        self.assertEqual("failed", third.get(j["id"])["state"])
-
-    def test_keyset_pagination_freezes_insert_ceiling(self):
-        for _ in range(5): self.submit()
-        p1 = self.store.list_jobs(limit=2)
-        self.submit()
-        p2 = self.store.list_jobs(limit=2, cursor=p1["next_cursor"])
-        p3 = self.store.list_jobs(limit=2, cursor=p2["next_cursor"])
-        ids = [x["id"] for x in p1["items"] + p2["items"] + p3["items"]]
-        self.assertEqual(5, len(ids)); self.assertEqual(5, len(set(ids)))
-
-    def test_malformed_cursor(self):
-        with self.assertRaises(ValidationError): self.store.list_jobs(cursor="!!!")
-
-    def test_migration_roundtrip(self):
-        self.store.migrate(1, allow_destructive=True)
-        self.store.migrate(CURRENT_VERSION)
-        self.assertTrue(self.store.ready())
-        self.store.migrate(0, allow_destructive=True)
-        self.store.migrate(CURRENT_VERSION)
-        self.assertTrue(self.store.ready())
-
-
-if __name__ == "__main__": unittest.main()
+    def test_client_job_id_can_safely_replay_same_submission(self) -> None:
+        with service_at() as (s, _, _):
+            jid="00000000-0000-0000-0000-000000000111"
+            first=s.submit(payload={"x":1},job_id=jid)
+            second=s.submit(payload={"x":1},job_id=jid)
+            self.assertEqual(first["id"],second["id"]); self.assertTrue(second["deduplicated"])

@@ -1,40 +1,24 @@
 from __future__ import annotations
 
-from .errors import InvalidTransition
+from .errors import Conflict
+from .models import JobState
 
-STATES = frozenset({
-    "scheduled",
-    "ready",
-    "leased",
-    "succeeded",
-    "failed",
-    "dead-lettered",
-    "cancelled",
-})
 
-# Normal runtime transitions. Administrative resurrection is intentionally separate.
-TRANSITIONS = {
-    "scheduled": frozenset({"ready", "cancelled"}),
-    "ready": frozenset({"leased", "cancelled"}),
-    "leased": frozenset({"succeeded", "failed", "ready", "dead-lettered", "cancelled"}),
-    "failed": frozenset({"ready", "cancelled"}),
-    "succeeded": frozenset(),
-    "dead-lettered": frozenset(),
-    "cancelled": frozenset(),
+_ALLOWED: dict[JobState, set[JobState]] = {
+    JobState.SCHEDULED: {JobState.READY, JobState.CANCELLED},
+    JobState.READY: {JobState.LEASED, JobState.CANCELLED},
+    JobState.LEASED: {JobState.SUCCEEDED, JobState.FAILED, JobState.READY, JobState.DEAD_LETTERED, JobState.CANCELLED},
+    JobState.FAILED: {JobState.SCHEDULED, JobState.DEAD_LETTERED},
+    JobState.SUCCEEDED: set(),
+    JobState.DEAD_LETTERED: {JobState.SCHEDULED},
+    JobState.CANCELLED: {JobState.SCHEDULED},
 }
 
-ADMIN_TRANSITIONS = {
-    "dead-lettered": frozenset({"ready", "scheduled"}),
-    "cancelled": frozenset({"ready", "scheduled"}),
-}
+TERMINAL_STATES = {JobState.SUCCEEDED, JobState.DEAD_LETTERED, JobState.CANCELLED}
 
 
-def ensure_transition(old: str, new: str, *, administrative: bool = False) -> None:
-    if old not in STATES or new not in STATES:
-        raise InvalidTransition(f"unknown state transition {old!r} -> {new!r}")
-    allowed = TRANSITIONS[old]
-    if administrative:
-        allowed = allowed | ADMIN_TRANSITIONS.get(old, frozenset())
-    if new not in allowed:
-        kind = "administrative" if administrative else "runtime"
-        raise InvalidTransition(f"illegal {kind} transition {old} -> {new}")
+def validate_transition(before: JobState, after: JobState, *, administrative: bool = False) -> None:
+    if after not in _ALLOWED[before]:
+        raise Conflict(f"illegal job state transition: {before} -> {after}")
+    if before in {JobState.DEAD_LETTERED, JobState.CANCELLED} and after == JobState.SCHEDULED and not administrative:
+        raise Conflict("terminal requeue requires explicit administrative operation")

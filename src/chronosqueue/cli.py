@@ -2,105 +2,149 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
+import os
+import sqlite3
 import sys
-import urllib.error
-import urllib.parse
-import urllib.request
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 from .api import serve
-from .clock import parse_timestamp_us
-from .migrations import CURRENT_VERSION
+from .clock import rfc3339_to_us
 from .logging_utils import configure_logging
-from .store import Store
+from .migration import LATEST_VERSION, migrate
+from .service import QueueService
+
+DEFAULT_URL = "http://127.0.0.1:8080"
 
 
-def _request(base: str, method: str, path: str, body=None):
-    data = None if body is None else json.dumps(body).encode()
-    req = urllib.request.Request(base.rstrip("/") + path, data=data, method=method, headers={"Content-Type": "application/json"})
+def _json_arg(value: str) -> Any:
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            raw = resp.read()
-            return resp.status, (json.loads(raw) if raw else None)
-    except urllib.error.HTTPError as exc:
+        return json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(f"invalid JSON: {exc}") from exc
+
+
+def _request(base: str, method: str, path: str, body: Any | None = None) -> Any:
+    data = None if body is None else json.dumps(body, allow_nan=False).encode()
+    req = Request(base.rstrip("/") + path, data=data, method=method,
+                  headers={"Content-Type": "application/json", "Accept": "application/json"})
+    try:
+        with urlopen(req, timeout=10) as response:
+            raw = response.read()
+            ctype = response.headers.get("Content-Type", "")
+            return json.loads(raw) if "json" in ctype else raw.decode()
+    except HTTPError as exc:
         raw = exc.read()
-        msg = json.loads(raw) if raw else {"error": str(exc)}
-        raise SystemExit(f"HTTP {exc.code}: {msg}")
+        try:
+            detail = json.loads(raw)
+        except Exception:
+            detail = {"error": {"message": raw.decode(errors="replace")}}
+        raise SystemExit(f"HTTP {exc.code}: {json.dumps(detail, ensure_ascii=False)}") from exc
+    except URLError as exc:
+        raise SystemExit(f"server unavailable: {exc.reason}") from exc
 
 
-def _print(obj, as_json: bool) -> None:
-    if as_json:
-        print(json.dumps(obj, indent=2, ensure_ascii=False))
-    elif isinstance(obj, dict) and "job" in obj:
-        j = obj["job"]
-        print(f"{j['id']} {j['state']} queue={j['queue']} attempts={j['attempt_count']}/{j['max_attempts']}")
-        if "lease_token" in obj:
-            print(f"lease_token={obj['lease_token']}")
+def _print(value: Any, json_mode: bool) -> None:
+    if json_mode or not isinstance(value, dict):
+        print(json.dumps(value, indent=2, ensure_ascii=False) if not isinstance(value, str) else value)
+        return
+    if "id" in value:
+        print(f"{value['id']}  {value.get('state','')}  queue={value.get('queue','')}  attempts={value.get('attempt_count','')}/{value.get('max_attempts','')}")
     else:
-        print(json.dumps(obj, indent=2, ensure_ascii=False))
+        print(json.dumps(value, indent=2, ensure_ascii=False))
 
 
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="chronosqueue")
-    p.add_argument("--url", default="http://127.0.0.1:8080")
-    p.add_argument("--json", action="store_true")
-    sub = p.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("serve"); s.add_argument("--db", default="./data/chronosqueue.db"); s.add_argument("--host", default="127.0.0.1"); s.add_argument("--port", type=int, default=8080)
-    m = sub.add_parser("migrate"); m.add_argument("--db", default="./data/chronosqueue.db"); m.add_argument("--target", type=int, default=CURRENT_VERSION); m.add_argument("--allow-destructive-downgrade", action="store_true")
-    s = sub.add_parser("submit"); s.add_argument("--queue", default="default"); s.add_argument("--payload", required=True); s.add_argument("--scheduled-at"); s.add_argument("--delay-ms", type=int); s.add_argument("--priority", type=int, default=0); s.add_argument("--tag", action="append", default=[]); s.add_argument("--idempotency-key"); s.add_argument("--max-attempts", type=int, default=3); s.add_argument("--retry-kind", choices=["fixed","exponential"], default="fixed"); s.add_argument("--retry-delay-ms", type=int, default=1000)
-    for name in ("get", "cancel", "requeue"):
-        x = sub.add_parser(name); x.add_argument("job_id")
-    l = sub.add_parser("list"); l.add_argument("--queue"); l.add_argument("--state"); l.add_argument("--tag"); l.add_argument("--priority", type=int); l.add_argument("--created-after"); l.add_argument("--created-before"); l.add_argument("--lease-owner"); l.add_argument("--cursor"); l.add_argument("--limit", type=int, default=100)
-    c = sub.add_parser("claim"); c.add_argument("--worker", required=True); c.add_argument("--queue", action="append", required=True); c.add_argument("--lease-ms", type=int, default=30000)
-    for name in ("complete", "fail", "heartbeat"):
-        x = sub.add_parser(name); x.add_argument("--worker", required=True); x.add_argument("--job", required=True); x.add_argument("--lease-token", required=True)
-        if name == "complete": x.add_argument("--data", default="null")
-        if name == "fail": x.add_argument("--error", default="null")
-        if name == "heartbeat": x.add_argument("--lease-ms", type=int, default=30000)
+    p = argparse.ArgumentParser(prog="chronosqueue", description="ChronosQueue server and client")
+    p.add_argument("--url", default=os.environ.get("CHRONOSQUEUE_URL", DEFAULT_URL), help="server URL for client commands")
+    p.add_argument("--json", action="store_true", help="machine-readable JSON output")
+    sub = p.add_subparsers(dest="command", required=True)
+
+    s = sub.add_parser("serve")
+    s.add_argument("--db", default=os.environ.get("CHRONOSQUEUE_DB", "./data/chronosqueue.db"))
+    s.add_argument("--host", default=os.environ.get("CHRONOSQUEUE_HOST", "127.0.0.1"))
+    s.add_argument("--port", type=int, default=int(os.environ.get("CHRONOSQUEUE_PORT", "8080")))
+    s.add_argument("--log-level", default=os.environ.get("CHRONOSQUEUE_LOG_LEVEL", "INFO"))
+
+    s = sub.add_parser("submit")
+    s.add_argument("--payload", type=_json_arg, required=True)
+    s.add_argument("--queue", default="default"); s.add_argument("--delay-ms", type=int)
+    s.add_argument("--scheduled-at"); s.add_argument("--priority", type=int, default=0)
+    s.add_argument("--tag", action="append", default=[]); s.add_argument("--dedupe-key")
+    s.add_argument("--max-attempts", type=int, default=3); s.add_argument("--retry-kind", choices=["fixed","exponential"], default="fixed")
+    s.add_argument("--retry-delay-ms", type=int, default=1000); s.add_argument("--retry-max-delay-ms", type=int, default=86400000)
+    s.add_argument("--id")
+
+    s = sub.add_parser("get"); s.add_argument("job_id")
+    s = sub.add_parser("list"); s.add_argument("--queue"); s.add_argument("--state"); s.add_argument("--tag", action="append", default=[]); s.add_argument("--limit", type=int, default=50); s.add_argument("--cursor")
+    s = sub.add_parser("cancel"); s.add_argument("job_id")
+    s = sub.add_parser("requeue"); s.add_argument("job_id"); s.add_argument("--scheduled-at"); s.add_argument("--keep-attempts", action="store_true")
+    s = sub.add_parser("claim"); s.add_argument("--worker", required=True); s.add_argument("--queue", action="append", default=[]); s.add_argument("--lease-ms", type=int)
+    for name in ("heartbeat", "complete", "fail"):
+        s = sub.add_parser(name); s.add_argument("--worker", required=True); s.add_argument("--job", required=True); s.add_argument("--token", required=True); s.add_argument("--generation", type=int, required=True)
+        if name == "heartbeat": s.add_argument("--lease-ms", type=int)
+        if name == "complete": s.add_argument("--result", type=_json_arg, default=None)
+        if name == "fail": s.add_argument("--error", type=_json_arg, default=None)
     sub.add_parser("queues"); sub.add_parser("leases"); sub.add_parser("health")
-    x = sub.add_parser("purge"); x.add_argument("--older-than", required=True); x.add_argument("--limit", type=int, default=1000)
-    x = sub.add_parser("requeue-many"); x.add_argument("job_ids", nargs="+"); x.add_argument("--scheduled-at")
+    s = sub.add_parser("purge"); s.add_argument("--terminal-before", required=True); s.add_argument("--limit", type=int, default=1000)
+    s = sub.add_parser("migrate"); s.add_argument("--db", default=os.environ.get("CHRONOSQUEUE_DB", "./data/chronosqueue.db")); s.add_argument("--target", type=int, default=LATEST_VERSION); s.add_argument("--allow-destructive", action="store_true")
     return p
 
 
-def main(argv=None) -> int:
-    raw = list(sys.argv[1:] if argv is None else argv)
-    if "--json" in raw:
-        raw = [x for x in raw if x != "--json"]
-        raw.insert(0, "--json")
-    args = parser().parse_args(raw)
-    configure_logging()
-    if args.cmd == "serve":
-        store = Store(args.db); store.migrate(); serve(store, args.host, args.port); return 0
-    if args.cmd == "migrate":
-        Store(args.db).migrate(args.target, allow_destructive=args.allow_destructive_downgrade); return 0
-    if args.cmd == "submit":
-        body = {"queue": args.queue, "payload": json.loads(args.payload), "priority": args.priority, "tags": args.tag, "idempotency_key": args.idempotency_key, "max_attempts": args.max_attempts, "retry": {"kind": args.retry_kind, "delay_ms": args.retry_delay_ms}}
-        if args.scheduled_at and args.delay_ms is not None:
-            raise SystemExit("use only one of --scheduled-at or --delay-ms")
+def main(argv: list[str] | None = None) -> int:
+    args = parser().parse_args(argv)
+    if args.command == "serve":
+        configure_logging(args.log_level)
+        service = QueueService(args.db)
+        serve(service, args.host, args.port)
+        return 0
+    if args.command == "migrate":
+        if args.target < LATEST_VERSION and not args.allow_destructive:
+            raise SystemExit("downgrades require --allow-destructive")
+        conn = sqlite3.connect(args.db, isolation_level=None)
+        try:
+            steps = migrate(conn, args.target)
+        finally:
+            conn.close()
+        _print({"target": args.target, "steps": steps}, args.json); return 0
+
+    if args.command == "submit":
+        body = {"payload": args.payload, "queue": args.queue, "delay_ms": args.delay_ms, "priority": args.priority,
+                "tags": args.tag, "dedupe_key": args.dedupe_key, "max_attempts": args.max_attempts,
+                "retry": {"kind": args.retry_kind, "delay_ms": args.retry_delay_ms, "max_delay_ms": args.retry_max_delay_ms}, "id": args.id}
+        body = {k:v for k,v in body.items() if v is not None}
         if args.scheduled_at: body["scheduled_at"] = args.scheduled_at
-        if args.delay_ms is not None: body["delay_ms"] = args.delay_ms
-        _, out = _request(args.url, "POST", "/v1/jobs", body); _print(out, args.json); return 0
-    if args.cmd == "get": _, out = _request(args.url, "GET", f"/v1/jobs/{args.job_id}"); _print(out, args.json); return 0
-    if args.cmd in {"cancel", "requeue"}: _, out = _request(args.url, "POST", f"/v1/jobs/{args.job_id}/{args.cmd}", {}); _print(out, args.json); return 0
-    if args.cmd == "list":
-        q = {k: v for k, v in {"queue":args.queue,"state":args.state,"tag":args.tag,"priority":args.priority,"created_after":args.created_after,"created_before":args.created_before,"lease_owner":args.lease_owner,"cursor":args.cursor,"limit":args.limit}.items() if v is not None}
-        _, out = _request(args.url, "GET", "/v1/jobs?" + urllib.parse.urlencode(q)); _print(out, args.json); return 0
-    if args.cmd == "claim": _, out = _request(args.url, "POST", "/v1/worker/claim", {"worker_id":args.worker,"queues":args.queue,"lease_ms":args.lease_ms}); _print(out, args.json); return 0
-    if args.cmd in {"complete","fail","heartbeat"}:
-        body = {"job_id":args.job,"lease_token":args.lease_token}
-        if args.cmd == "complete": body["result"] = json.loads(args.data)
-        if args.cmd == "fail": body["error"] = json.loads(args.error)
-        if args.cmd == "heartbeat": body["lease_ms"] = args.lease_ms
-        _, out = _request(args.url, "POST", f"/v1/worker/{args.worker}/{args.cmd}", body); _print(out, args.json); return 0
-    if args.cmd in {"queues","leases"}: _, out = _request(args.url, "GET", f"/v1/{args.cmd}"); _print(out, args.json); return 0
-    if args.cmd == "health": _, out = _request(args.url, "GET", "/health/ready"); _print(out, args.json); return 0
-    if args.cmd == "purge": _, out = _request(args.url, "POST", "/v1/admin/purge", {"older_than":args.older_than,"limit":args.limit}); _print(out, args.json); return 0
-    if args.cmd == "requeue-many":
-        body={"job_ids":args.job_ids}
+        out = _request(args.url, "POST", "/v1/jobs", body)
+    elif args.command == "get": out = _request(args.url, "GET", f"/v1/jobs/{args.job_id}")
+    elif args.command == "list":
+        q: list[tuple[str,str]] = []
+        for k in ("queue","state","limit","cursor"):
+            v=getattr(args,k)
+            if v is not None: q.append((k,str(v)))
+        q.extend(("tag", t) for t in args.tag)
+        out=_request(args.url,"GET","/v1/jobs?"+urlencode(q))
+    elif args.command == "cancel": out=_request(args.url,"POST",f"/v1/jobs/{args.job_id}/cancel",{})
+    elif args.command == "requeue":
+        body={"reset_attempts":not args.keep_attempts}
         if args.scheduled_at: body["scheduled_at"]=args.scheduled_at
-        _, out = _request(args.url, "POST", "/v1/admin/requeue", body); _print(out, args.json); return 0
-    return 2
+        out=_request(args.url,"POST",f"/v1/jobs/{args.job_id}/requeue",body)
+    elif args.command == "claim": out=_request(args.url,"POST","/v1/worker/claim",{"worker_id":args.worker,"queues":args.queue or ["default"],"lease_ms":args.lease_ms})
+    elif args.command in {"heartbeat","complete","fail"}:
+        body={"job_id":args.job,"lease_token":args.token,"lease_generation":args.generation}
+        if args.command=="heartbeat": body["lease_ms"]=args.lease_ms
+        elif args.command=="complete": body["result"]=args.result
+        else: body["error"]=args.error
+        out=_request(args.url,"POST",f"/v1/worker/{args.worker}/{args.command}",body)
+    elif args.command == "queues": out=_request(args.url,"GET","/v1/queues")
+    elif args.command == "leases": out=_request(args.url,"GET","/v1/leases")
+    elif args.command == "health": out={"live":_request(args.url,"GET","/health/live"),"ready":_request(args.url,"GET","/health/ready")}
+    elif args.command == "purge": out=_request(args.url,"POST","/v1/admin/purge",{"terminal_before_us":rfc3339_to_us(args.terminal_before),"limit":args.limit})
+    else: raise AssertionError(args.command)
+    _print(out,args.json)
+    return 0
+
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())
