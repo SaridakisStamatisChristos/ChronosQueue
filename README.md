@@ -62,4 +62,4 @@ v0.1 has **no authentication or authorization**. It is intended for trusted loca
 
 ## License
 
-No open-source license has been selected. That legal/commercial choice is intentionally not inferred by the implementation campaign.
+ChronosQueue is currently **proprietary software — all rights reserved**. No open-source license is granted. See [`LICENSE`](LICENSE) for the current terms. The copyright holder may relicense the project under different terms in the future.
