@@ -122,3 +122,12 @@ No unresolved code-quality blocker is known at local evidence closure. Docker/CI
 - Repair: replace the stale `storage.py` digest in `evidence/MANIFEST.sha256` with the SHA-256 of the repository source bytes and record this failure without altering queue behavior.
 - Regression/evidence: the existing manifest verifier remains fail-closed and checks every authoritative source/evidence file after package installation.
 - Reverification: GitHub CI must independently pass both Python verification lanes and the container lane before this gate is closed.
+
+## F-015 — Python 3.13 wheel gate assumed globally installed setuptools
+
+- Reproducer: CI run `38146002036` passed package install, quality, all 41 tests, manifest verification, and the complete container lane; Python 3.13 then failed only at `pip wheel --no-build-isolation` with `BackendUnavailable: Cannot import 'setuptools.build_meta'`.
+- Classification: CI packaging-environment defect, not a ChronosQueue runtime defect.
+- Earliest invalidated phase: PACKAGE / CI.
+- Repair: build the verification wheel with normal PEP 517 build isolation, matching the already successful package-install path and the declared `pyproject.toml` build requirements.
+- Regression/evidence: Python 3.11 and 3.13 must both build the wheel in CI after all tests and manifest verification.
+- Reverification: final GitHub CI rerun required.

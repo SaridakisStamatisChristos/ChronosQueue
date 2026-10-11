@@ -32,7 +32,7 @@ jobs:
       - name: Evidence manifest integrity
         run: python scripts/verify_manifest.py
       - name: Build wheel
-        run: python -m pip wheel . --no-deps --no-build-isolation -w dist
+        run: python -m pip wheel . --no-deps -w dist
 
   container:
     runs-on: ubuntu-latest
