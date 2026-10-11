@@ -1,6 +1,6 @@
 # Requirement coverage matrix
 
-Evidence state meanings: **VERIFIED** = directly executed on this revision locally; **PARTIAL** = meaningful evidence exists but a material lane is pending; **UNVERIFIED** = not executed yet; **N/A** = explicitly outside the declared product contract.
+Evidence state meanings: **VERIFIED** = directly executed on this revision locally and/or in the referenced GitHub CI; **PARTIAL** = meaningful evidence exists but a material lane is pending; **UNVERIFIED** = not executed yet; **N/A** = explicitly outside the declared product contract.
 
 | ID | Requirement | Evidence/artifact | State |
 |---|---|---|---|
@@ -35,11 +35,11 @@ Evidence state meanings: **VERIFIED** = directly executed on this revision local
 | R-029 | Trusted-local boundary stated; CLI binds loopback by default; inputs bounded; no HTTP filesystem paths. | code/docs/security review and tests. | VERIFIED |
 | R-030 | Real reversible migrations and legacy-row upgrade test. | `0→1→2→1→0→2` executed test with v1 row. | VERIFIED |
 | R-031 | Liveness differs from readiness; storage/schema failure makes readiness fail. | live HTTP health test with broken DB path. | VERIFIED |
-| R-032 | Dockerfile is non-root and has healthcheck/persistent data path. | artifact exists; real image build not available locally. | UNVERIFIED |
-| R-033 | Compose persists data and publishes host loopback only. | `compose.yaml`; Compose validation pending CI. | UNVERIFIED |
-| R-034 | CI enforces quality, tests, compile, migrations, route consistency, manifest, wheel, Docker, Compose and container E2E. | `.github/workflows/ci.yml`; execution pending GitHub Actions. | UNVERIFIED |
+| R-032 | Dockerfile is non-root and has healthcheck/persistent data path. | GitHub Actions run `38146181915` built and booted the real image and reached readiness. | VERIFIED |
+| R-033 | Compose persists data and publishes host loopback only. | `docker compose config --quiet` and real Compose boot passed in run `38146181915`; committed mapping is `127.0.0.1`. | VERIFIED |
+| R-034 | CI enforces quality, tests, compile, migrations, route consistency, manifest, wheel, Docker, Compose and container E2E. | GitHub Actions run `38146181915`: Python 3.11, Python 3.13 and container jobs all passed. | VERIFIED |
 | R-035 | Documentation covers architecture, API, worker semantics, operations, development, security and contributing. | committed docs set. | VERIFIED |
-| R-036 | Evidence assumptions/requirements/claims/failure ledger/real SHA-256 manifest exist. | Required evidence files present; `scripts/generate_manifest.py` generated and `scripts/verify_manifest.py` verified the final local SHA-256 manifest. | VERIFIED |
+| R-036 | Evidence assumptions/requirements/claims/failure ledger/real SHA-256 manifest exist. | Manifest verifier passed for all 54 authoritative files in both Python lanes of run `38146181915`. | VERIFIED |
 | R-037 | No multi-node coordination claim. | README/architecture/claims ledger. | VERIFIED |
 | R-038 | No unsupported performance claim. | claims ledger/README; no throughput/SLO assertion. | VERIFIED |
 | R-039 | Corrupt/malformed persistent state cannot silently become executable where schema can prevent it. | SQLite CHECK falsifier for illegal state + strict lease metadata constraint. | VERIFIED |
@@ -50,4 +50,4 @@ Evidence state meanings: **VERIFIED** = directly executed on this revision local
 | R-044 | Authentication/authorization for untrusted-network exposure. | Explicitly outside trusted-local v0.1. | N/A |
 | R-045 | Multi-node consensus/distributed leasing. | Explicitly outside single-server v0.1. | N/A |
 | R-046 | Production-Proven status from real sustained deployment. | Requires external operational runtime evidence. | UNVERIFIED |
-| R-047 | Commercial readiness including chosen license/support/auth posture. | No license/auth selected. | UNVERIFIED |
+| R-047 | Commercial readiness including chosen license/support/auth posture. | No license/auth/support/release-signing decision selected. | UNVERIFIED |

@@ -131,3 +131,10 @@ No unresolved code-quality blocker is known at local evidence closure. Docker/CI
 - Repair: build the verification wheel with normal PEP 517 build isolation, matching the already successful package-install path and the declared `pyproject.toml` build requirements.
 - Regression/evidence: Python 3.11 and 3.13 must both build the wheel in CI after all tests and manifest verification.
 - Reverification: final GitHub CI rerun required.
+
+## Evidence closure — run 38146181915
+
+- GitHub Actions run `38146181915` on executable verification revision `f1a87f60e5f65bb606d90b798d242f7102853e90` passed the Python 3.11, Python 3.13, and real-container jobs.
+- Both Python lanes passed package installation, quality/compile checks, all 41 tests, SHA-256 manifest verification, and wheel build.
+- The container lane passed Compose validation, real image build, Compose boot, readiness, submit → claim → complete smoke, and shutdown.
+- This closes the pending reverification items in F-012 through F-015. Historical failed runs remain part of the ledger and are not erased.
