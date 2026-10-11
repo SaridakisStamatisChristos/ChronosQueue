@@ -105,3 +105,11 @@ No unresolved code-quality blocker is known at local evidence closure. Docker/CI
 - Repair: manifest generation and verification explicitly ignore generated `*.egg-info` directories, matching the repository `.gitignore` source boundary.
 - Regression/evidence: reproduce by installing the package in-tree before manifest verification; verifier must still validate the 54 authoritative source/evidence files.
 - Reverification: quality + full 41-test suite + post-install manifest verification rerun locally; final GitHub CI rerun required.
+
+## F-013 — GitHub source blob differed from locally verified source bytes
+
+- Reproducer: CI run `38143479074` passed package install, quality, all 41 tests, and the full container lane, then the evidence manifest reported a SHA-256 mismatch for `src/chronosqueue/base.py`.
+- Classification: Git-tree integration/evidence mismatch; semantic tests remained green, but repository byte identity was not proven.
+- Earliest invalidated phase: INTEGRATE / MANIFEST-EVIDENCE.
+- Repair: compare remote Git blob identities against the locally verified source set; replace `base.py` with a Git blob created from the exact local bytes and leave all matching blobs untouched.
+- Reverification: local quality, 41-test suite, and manifest verification rerun before commit; final GitHub CI required to independently close the gate.
