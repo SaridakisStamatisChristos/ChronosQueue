@@ -1,0 +1,35 @@
+name: R7 Bootstrap
+
+on:
+  push:
+    paths:
+      - ".github/workflows/bootstrap.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  expand:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify and expand R7 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .bootstrap/r7-* | base64 -d > /tmp/chronosqueue-r7.tar.gz
+          echo "2662c95f521f65eefd6271a6e17d22a8b7afe52dd92673c3452fe67a004d4b55  /tmp/chronosqueue-r7.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/chronosqueue-r7.tar.gz
+          rm -rf .bootstrap .github/workflows/bootstrap.yml
+          python scripts/quality.py
+          PYTHONPATH=src:. python -m unittest discover -s tests -v
+          python scripts/verify_manifest.py
+      - name: Commit synthesized repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "build: synthesize ChronosQueue with UCS-Pro R7"
+          git push origin HEAD:${GITHUB_REF_NAME}
