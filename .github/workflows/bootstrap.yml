@@ -2,11 +2,11 @@ name: r7-bootstrap
 on:
   push:
     branches: [r7-zero-to-hero]
-  workflow_dispatch:
 permissions:
   contents: write
 jobs:
   reconstruct-verify-commit:
+    if: startsWith(github.event.head_commit.message, 'ci: reconstruct')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -52,9 +52,10 @@ jobs:
       - if: always()
         name: Tear down container
         run: docker compose down -v || true
-      - name: Replace bootstrap transport with product tree
+      - name: Commit verified product files without workflow mutation
         run: |
-          rm -rf .bootstrap .github/workflows/bootstrap.yml
+          rm -rf .bootstrap
+          rm -f .github/workflows/ci.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
