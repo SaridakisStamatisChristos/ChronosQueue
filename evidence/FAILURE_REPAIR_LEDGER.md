@@ -113,3 +113,12 @@ No unresolved code-quality blocker is known at local evidence closure. Docker/CI
 - Earliest invalidated phase: INTEGRATE / MANIFEST-EVIDENCE.
 - Repair: compare remote Git blob identities against the locally verified source set; replace `base.py` with a Git blob created from the exact local bytes and leave all matching blobs untouched.
 - Reverification: local quality, 41-test suite, and manifest verification rerun before commit; final GitHub CI required to independently close the gate.
+
+## F-014 — manifest retained pre-integration hash for storage module
+
+- Reproducer: CI run `38143853890` passed package installation, quality checks, all 41 tests on Python 3.11/3.13, and the complete real-container workflow, but manifest verification reported `hash mismatch: src/chronosqueue/storage.py`.
+- Classification: Git-tree integration/evidence mismatch; queue runtime semantics remained green, but the evidence manifest no longer described the exact repository bytes.
+- Earliest invalidated phase: MANIFEST/EVIDENCE.
+- Repair: replace the stale `storage.py` digest in `evidence/MANIFEST.sha256` with the SHA-256 of the repository source bytes and record this failure without altering queue behavior.
+- Regression/evidence: the existing manifest verifier remains fail-closed and checks every authoritative source/evidence file after package installation.
+- Reverification: GitHub CI must independently pass both Python verification lanes and the container lane before this gate is closed.
