@@ -17,11 +17,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat .bootstrap/r7-* | base64 -d > /tmp/chronosqueue-r7.tar.gz
-          echo "transport archive sha256: $(sha256sum /tmp/chronosqueue-r7.tar.gz | awk '{print $1}')"
-          tar -xzf /tmp/chronosqueue-r7.tar.gz
+          echo "23367d9e938ca6b2dc484f56eaec5a0f322e645ef30cefac237dc06fc5cf585b  .bootstrap/package.tar.gz" | sha256sum -c -
+          tar -xzf .bootstrap/package.tar.gz
           rm -rf .bootstrap .github/workflows/bootstrap.yml
-          rm -f src/chronosqueue/api.py.tmp
           python scripts/generate_manifest.py
           python scripts/quality.py
           PYTHONPATH=src:. python -m unittest discover -s tests -v
