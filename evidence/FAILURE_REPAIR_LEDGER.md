@@ -138,3 +138,12 @@ No unresolved code-quality blocker is known at local evidence closure. Docker/CI
 - Both Python lanes passed package installation, quality/compile checks, all 41 tests, SHA-256 manifest verification, and wheel build.
 - The container lane passed Compose validation, real image build, Compose boot, readiness, submit → claim → complete smoke, and shutdown.
 - This closes the pending reverification items in F-012 through F-015. Historical failed runs remain part of the ledger and are not erased.
+
+## F-016 — evidence closure introduced trailing whitespace
+
+- Reproducer: CI run `38146489106` failed the formatting/static sanity gate on `evidence/FINAL_AUDIT.md:3` before the test suite because the closure document used a Markdown hard-break with trailing spaces.
+- Classification: evidence/documentation quality defect; no runtime queue semantics were implicated.
+- Earliest invalidated phase: MANIFEST/EVIDENCE / FINAL AUDIT.
+- Repair: remove the trailing whitespace and refresh the evidence manifest while retaining the same closure claims.
+- Regression/evidence: the repository quality checker must pass on both Python lanes before tests; the full CI workflow is rerun rather than accepting a documentation-only exception.
+- Reverification: final GitHub CI rerun required.

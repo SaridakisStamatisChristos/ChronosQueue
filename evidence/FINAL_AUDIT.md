@@ -1,6 +1,6 @@
 # Final falsification gate — evidence closure
 
-Executable verification revision: `f1a87f60e5f65bb606d90b798d242f7102853e90`  
+Executable verification revision: `f1a87f60e5f65bb606d90b798d242f7102853e90`
 GitHub Actions closure run: `38146181915`
 
 1. **Can two workers ever hold a valid lease simultaneously?** No counterexample found. SQLite write serialization plus the 32-worker single-job race and the many-worker/many-job race yielded one active lease per job.
