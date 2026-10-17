@@ -9,10 +9,10 @@
 | Deterministic no-early scheduling | VERIFIED | manual-clock exact boundary tests. |
 | Cursor pagination does not repeat due to concurrent inserts | VERIFIED | snapshot-max-sequence concurrency test. Mutable filter membership is explicitly not an MVCC snapshot claim. |
 | API/OpenAPI route set matches | VERIFIED | executed route-set equivalence test. |
-| Docker deployment works | VERIFIED | GitHub Actions run `38146181915`: Compose validation, real image build, container boot/readiness, submit → claim → complete smoke, and clean shutdown all passed. |
-| Production-ready for declared target | VERIFIED | Scope-bounded verdict for one server + persistent local SQLite + concurrent workers on a trusted local/internal network. Unit, concurrency, migration, evidence, packaging, Docker, health and E2E gates pass on run `38146181915`. This is not a production-proven claim. |
+| Docker deployment works | VERIFIED | The CI container lane validates Compose, builds the real image, boots the deployment, reaches readiness, exercises submit → claim → complete, and shuts down cleanly. |
+| Production-ready for declared target | VERIFIED | Scope-bounded verdict for one server + persistent local SQLite + concurrent workers on a trusted local/internal network. Unit, concurrency, migration, evidence, packaging, Docker, health and E2E gates are required by CI. This is not a production-proven claim. |
 | Production-proven | UNVERIFIED | Requires sustained real deployment/operations evidence, not CI. |
-| Commercial-ready | UNVERIFIED | No product license, authentication/authorization, support policy, release-signing posture, or commercial packaging decision has been established. |
+| Commercial-ready | UNVERIFIED | A proprietary all-rights-reserved license is selected, but built-in authentication/authorization, support policy, release-signing posture, and commercial packaging are not established. |
 | SOTA code quality | UNVERIFIED | No comparative state-of-the-art benchmark or independent comparative audit justifies the SOTA label; completion alone is insufficient. |
 | Multi-node/distributed coordination | N/A | Explicit non-goal; no such claim is made. |
 | Performance superiority or throughput SLO | N/A | No comparative performance claim is made. |
