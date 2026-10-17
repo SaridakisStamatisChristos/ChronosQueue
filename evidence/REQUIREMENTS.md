@@ -1,6 +1,6 @@
 # Requirement coverage matrix
 
-Evidence state meanings: **VERIFIED** = directly executed on this revision locally and/or in the referenced GitHub CI; **PARTIAL** = meaningful evidence exists but a material lane is pending; **UNVERIFIED** = not executed yet; **N/A** = explicitly outside the declared product contract.
+Evidence state meanings: **VERIFIED** = directly exercised by the repository's current test/CI evidence; **PARTIAL** = meaningful evidence exists but a material lane is pending; **UNVERIFIED** = not executed yet; **N/A** = explicitly outside the declared product contract.
 
 | ID | Requirement | Evidence/artifact | State |
 |---|---|---|---|
@@ -25,7 +25,7 @@ Evidence state meanings: **VERIFIED** = directly executed on this revision local
 | R-019 | Cancel/requeue/purge/stats/active-leases admin operations exist with narrow semantics. | service/API/CLI; terminal-only purge falsifier. | VERIFIED |
 | R-020 | Versioned HTTP API includes required v1, health and metrics routes. | OpenAPI + live API tests. | VERIFIED |
 | R-021 | OpenAPI and runtime route declarations cannot silently diverge. | `test_openapi_route_set_equals_declared_runtime_route_set`. | VERIFIED |
-| R-022 | CLI supports serve/submit/get/list/cancel/requeue/claim/heartbeat/complete/fail/queues/leases/health/migrate/purge. | Installed `chronosqueue` entry point exercised against a live server: submit → claim → complete. | VERIFIED |
+| R-022 | CLI supports serve/submit/get/list/cancel/requeue/claim/heartbeat/complete/fail/queues/leases/health/migrate/purge. | Installed `chronosqueue` entry point is exercised against a live server through submit → claim → complete. | VERIFIED |
 | R-023 | SQLite uses WAL, foreign keys, transactional writes, busy timeout, synchronous durability. | store initialization + executed suite. | VERIFIED |
 | R-024 | Persistent timestamps are unambiguous sortable integers. | schema + schedule/order tests. | VERIFIED |
 | R-025 | Clock abstraction deterministically controls schedule/lease/retry/purge boundaries. | `ManualClock` across tests; no sleep-based correctness tests. | VERIFIED |
@@ -35,11 +35,11 @@ Evidence state meanings: **VERIFIED** = directly executed on this revision local
 | R-029 | Trusted-local boundary stated; CLI binds loopback by default; inputs bounded; no HTTP filesystem paths. | code/docs/security review and tests. | VERIFIED |
 | R-030 | Real reversible migrations and legacy-row upgrade test. | `0→1→2→1→0→2` executed test with v1 row. | VERIFIED |
 | R-031 | Liveness differs from readiness; storage/schema failure makes readiness fail. | live HTTP health test with broken DB path. | VERIFIED |
-| R-032 | Dockerfile is non-root and has healthcheck/persistent data path. | GitHub Actions run `38146181915` built and booted the real image and reached readiness. | VERIFIED |
-| R-033 | Compose persists data and publishes host loopback only. | `docker compose config --quiet` and real Compose boot passed in run `38146181915`; committed mapping is `127.0.0.1`. | VERIFIED |
-| R-034 | CI enforces quality, tests, compile, migrations, route consistency, manifest, wheel, Docker, Compose and container E2E. | GitHub Actions run `38146181915`: Python 3.11, Python 3.13 and container jobs all passed. | VERIFIED |
+| R-032 | Dockerfile is non-root and has healthcheck/persistent data path. | CI builds and boots the real image and requires readiness before the container smoke path continues. | VERIFIED |
+| R-033 | Compose persists data and publishes host loopback only. | `docker compose config --quiet` plus real Compose boot in CI; committed mapping is `127.0.0.1`. | VERIFIED |
+| R-034 | CI enforces quality, tests, compile, migrations, route consistency, manifest, wheel, Docker, Compose and container E2E. | `.github/workflows/ci.yml` runs Python 3.11, Python 3.13 and container verification jobs on pushes and pull requests. | VERIFIED |
 | R-035 | Documentation covers architecture, API, worker semantics, operations, development, security and contributing. | committed docs set. | VERIFIED |
-| R-036 | Evidence assumptions/requirements/claims/failure ledger/real SHA-256 manifest exist. | Manifest verifier passed for all 54 authoritative files in both Python lanes of run `38146181915`. | VERIFIED |
+| R-036 | Durable evidence assumptions/requirements/claims/verification and a real SHA-256 manifest exist. | `evidence/` plus fail-closed manifest verification in CI. | VERIFIED |
 | R-037 | No multi-node coordination claim. | README/architecture/claims ledger. | VERIFIED |
 | R-038 | No unsupported performance claim. | claims ledger/README; no throughput/SLO assertion. | VERIFIED |
 | R-039 | Corrupt/malformed persistent state cannot silently become executable where schema can prevent it. | SQLite CHECK falsifier for illegal state + strict lease metadata constraint. | VERIFIED |
@@ -50,4 +50,4 @@ Evidence state meanings: **VERIFIED** = directly executed on this revision local
 | R-044 | Authentication/authorization for untrusted-network exposure. | Explicitly outside trusted-local v0.1. | N/A |
 | R-045 | Multi-node consensus/distributed leasing. | Explicitly outside single-server v0.1. | N/A |
 | R-046 | Production-Proven status from real sustained deployment. | Requires external operational runtime evidence. | UNVERIFIED |
-| R-047 | Commercial readiness including chosen license/support/auth posture. | No license/auth/support/release-signing decision selected. | UNVERIFIED |
+| R-047 | Commercial readiness including support/auth/release posture. | Proprietary licensing is selected; built-in auth, support policy, release signing and commercial packaging remain unestablished. | UNVERIFIED |

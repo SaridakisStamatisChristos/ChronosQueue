@@ -54,7 +54,13 @@ python scripts/generate_manifest.py
 python scripts/verify_manifest.py
 ```
 
-See `docs/architecture.md`, `docs/worker-protocol.md`, `docs/operations.md`, and the `evidence/` directory for the exact guarantees, limitations, and executed evidence model.
+See `docs/architecture.md`, `docs/worker-protocol.md`, `docs/operations.md`, and the `evidence/` directory for the exact guarantees, limitations, and verification model.
+
+## Evidence model
+
+The active `evidence/` directory contains durable product assurance material: requirements, assumptions, supported claims, the current verification contract, and a SHA-256 manifest of authoritative repository files. One-off implementation-session chronology is intentionally left to Git history instead of being presented as current product evidence.
+
+See `evidence/VERIFICATION.md` for the required verification lanes and evidence boundaries. `python scripts/verify_manifest.py` fails closed if an authoritative tracked file differs from the recorded manifest.
 
 ## Trust boundary
 

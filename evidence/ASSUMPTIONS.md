@@ -10,5 +10,5 @@
 | A-006 | Explicit administrative requeue is allowed from cancelled/dead-lettered states; succeeded jobs stay final in v0.1. | HIGH | High | terminal safety | Requirement to replay successful jobs. |
 | A-007 | Keyset pagination guarantees immutable creation-window traversal, not MVCC snapshot membership for mutable state filters. | MEDIUM | High | querying | Requirement for transaction-snapshot pagination. |
 | A-008 | Docker process may bind all container interfaces; the supported Compose deployment publishes only to host loopback. | HIGH | High | trust boundary | Orchestrator/network model changes. |
-| A-009 | No open-source license is selected because licensing is a legal/commercial decision not supplied in the brief. | HIGH | High | commercial readiness | Owner selects a license. |
+| A-009 | ChronosQueue is distributed under a proprietary all-rights-reserved license; no open-source license is granted. | HIGH | High | licensing, commercial readiness | Copyright holder relicenses the project. |
 | A-010 | Local filesystems with SQLite-compatible locking are the supported storage substrate; ambiguous network filesystem locking is out of scope. | HIGH | High | persistence | Need for NFS/shared-volume support. |
