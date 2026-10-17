@@ -12,7 +12,7 @@ The test suite uses deterministic manual clocks instead of timing sleeps for sch
 
 `make quality` performs dependency-free formatting hygiene, AST checks, and bytecode compilation. `make test` runs unit, integration, HTTP, migration, crash-recovery, concurrency, pagination, and adversarial tests.
 
-Before changing evidence-tracked files:
+After changing any authoritative source, documentation, test, script, or evidence file, reseal and verify the repository manifest:
 
 ```bash
 python scripts/generate_manifest.py
@@ -20,3 +20,5 @@ python scripts/verify_manifest.py
 ```
 
 Docker verification is intentionally performed against the real built image in CI: Compose validation, image build, boot, readiness wait, and submit→claim→complete smoke.
+
+The durable verification contract and evidence boundaries are documented in `evidence/VERIFICATION.md`. Development-session chronology belongs in Git history rather than the active evidence set.
